@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDART_REQUIRED true)
 
 cmake_minimum_required(VERSION 3.15)
-project(Knapsack-problem CXX)
+project(Genetic-algorithm CXX)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-add_executable(main src/main.cpp)
+add_executable(TSP src/TSP.cpp src/TSP.hpp)
