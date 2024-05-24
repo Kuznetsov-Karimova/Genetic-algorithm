@@ -11,6 +11,9 @@
 #include <random>
 #include <numeric>
 #include <iostream>
+#include <execution>
+#include <mutex>
+#include <future>
 
 
 struct City {
@@ -77,7 +80,7 @@ public:
             break;
         }
         case MutationType::INVERSION: {
-            std::uniform_int_distribution<int> dist(0, static_cast<int>(m_full_path.size() - 1));
+            std::uniform_int_distribution<int> dist(0, static_cast<int>(m_full_path.size() - 2));
             int idx1 = dist(gen);
             int idx2 = dist(gen);
 
@@ -88,7 +91,7 @@ public:
             break;
         }
         case MutationType::DISPLACEMENT: {
-            std::uniform_int_distribution<int> dist(0, static_cast<int>(m_full_path.size() - 1));
+            std::uniform_int_distribution<int> dist(0, static_cast<int>(m_full_path.size() - 2));
             int idx1 = dist(gen);
             int idx2 = dist(gen);
 
@@ -105,23 +108,18 @@ public:
     }
 
     [[nodiscard]] auto fitness() const -> double {
-        double full_sum = 0;
-        for (int i = 0; i < m_full_path.size() - 1; ++i) {
-            full_sum += coord_distance(m_full_path[i], m_full_path[i+1]);
-        }
-        full_sum += coord_distance(m_full_path[m_full_path.size() - 1], m_full_path[0]);
-
-        return full_sum;
+        std::vector<double> distances(m_full_path.size() - 1);
+        std::transform(std::execution::par, m_full_path.begin(), m_full_path.end() - 1, m_full_path.begin() + 1, distances.begin(), coord_distance);
+        distances.push_back(coord_distance(m_full_path.back(), m_full_path.front()));
+        return std::accumulate(distances.begin(), distances.end(), 0.0);
     }
 
-    [[nodiscard]] auto fitness(const std::vector<std::vector<int>>& adjacency_matrix) const -> double{
-        double full_sum = 0;
-        for (int i = 0; i < m_full_path.size() - 1; ++i) {
-            full_sum += adjacency_matrix[m_full_path[i].number][m_full_path[i+1].number];
-        }
-        full_sum += adjacency_matrix[m_full_path[m_full_path.size() - 1].number][m_full_path[0].number];
-
-        return full_sum;
+    [[nodiscard]] auto fitness(const std::vector<std::vector<int>>& adjacency_matrix) const -> double {
+        std::vector<int> distances(m_full_path.size() - 1);
+        std::transform(std::execution::par, m_full_path.begin(), m_full_path.end() - 1, m_full_path.begin() + 1, distances.begin(),
+                    [&](const City& a, const City& b) { return adjacency_matrix[a.number][b.number]; });
+        distances.push_back(adjacency_matrix[m_full_path.back().number][m_full_path.front().number]);
+        return std::accumulate(distances.begin(), distances.end(), 0.0);
     }
 
     std::vector<City> m_full_path; 
@@ -168,10 +166,10 @@ public:
         }
     }
 
-    void replace_population(const std::vector<Chromosome>& new_population) {
+    void replace_population(std::vector<Chromosome>& new_population) {
         m_population.clear();
-
-        m_population.insert(m_population.end(), new_population.begin(), new_population.end());
+        m_population = std::move(new_population);
+        // m_population.insert(m_population.end(), new_population.begin(), new_population.end());
     }
 
     // selection - return parents
@@ -229,17 +227,31 @@ public:
         }
 
         case SelectionType::RANK: {
-            std::sort(m_population.begin(), m_population.end(), [&](const Chromosome &a, const Chromosome &b) {
-                if (COORD_TYPE) {return a.fitness() < b.fitness(); }
-                return a.fitness(adjacency_mat) < b.fitness(adjacency_mat); });
+            std::vector<std::pair<double, int>> sorted_fitness;
+            for (size_t i = 0; i < m_population.size(); ++i) {
+                if (COORD_TYPE) {
+                    sorted_fitness.emplace_back(m_population[i].fitness(), i);
+                } else {
+                    sorted_fitness.emplace_back(m_population[i].fitness(adjacency_mat), i);
+                }
+            }
+            std::sort(sorted_fitness.begin(), sorted_fitness.end());
 
-            std::vector<int> ranks(population_size);
-            std::iota(ranks.begin(), ranks.end(), 1);
+            std::vector<int> ranks(m_population.size());
+            int current_rank = 1;
+            for (size_t i = 0; i < sorted_fitness.size(); ++i) {
+                if (i > 0 && sorted_fitness[i].first == sorted_fitness[i-1].first) {
+                    ranks[sorted_fitness[i].second] = current_rank;
+                } else {
+                    current_rank = i + 1;
+                    ranks[sorted_fitness[i].second] = current_rank;
+                }
+            }
 
             double total_rank = std::accumulate(ranks.begin(), ranks.end(), 0.0);
-            std::vector<double> selection_probs(population_size);
+            std::vector<double> selection_probs(m_population.size());
 
-            for (int i = 0; i < population_size; ++i) {
+            for (size_t i = 0; i < m_population.size(); ++i) {
                 selection_probs[i] = ranks[i] / total_rank;
             }
 
@@ -249,16 +261,15 @@ public:
             auto select_one = [&]() -> Chromosome {
                 double r = dis(gen);
                 auto it = std::lower_bound(selection_probs.begin(), selection_probs.end(), r);
-                return m_population[it - selection_probs.begin()];
+                return m_population[sorted_fitness[it - selection_probs.begin()].second];
             };
 
             return std::make_pair(select_one(), select_one());
-
-            break;
         }
 
-        return {m_population[0], m_population[1]};
-    }
+        default:
+            throw std::invalid_argument("Unknown selection type");
+        }
     }
 
     auto find_city_in_other_parent(int index, const std::vector<City>& parent1, const std::vector<City>& parent2) -> int {
@@ -385,22 +396,36 @@ public:
     void genetic_algorithm(){
         for (uint16_t generation = 0; generation < generations_count; ++generation) {
             std::vector<Chromosome> new_population;
+            new_population.reserve(population_size);
+            std::mutex mutex;
 
+            // Процессы можно распараллелить
+            std::vector<std::future<void>> futures;
             for (uint16_t i = 0; i < population_size / 2; ++i) {
-                // selection
-                auto [parent1, parent2] = selection(selection_type);
+                futures.push_back(std::async(std::launch::async, [&, i]() {
+                    // selection
+                    auto [parent1, parent2] = selection(selection_type);
 
-                // crossover
-                Chromosome child1(parent1.m_full_path);
-                Chromosome child2(parent2.m_full_path);
-                crossover(child1, child2, crossover_type);
+                    // crossover
+                    Chromosome child1(parent1.m_full_path);
+                    Chromosome child2(parent2.m_full_path);
+                    crossover(child1, child2, crossover_type);
 
-                // mutation
-                child1.mutation(mutation_type, mutation_probability);
-                child2.mutation(mutation_type, mutation_probability);
+                    // mutation
+                    child1.mutation(mutation_type, mutation_probability);
+                    child2.mutation(mutation_type, mutation_probability);
 
-                new_population.push_back(std::move(child1));
-                new_population.push_back(std::move(child2));
+                    // Блок для добавления в общий вектор с защитой мьютексом
+                    {
+                         std::lock_guard<std::mutex> lock(mutex);
+                        new_population.push_back(std::move(child1));
+                        new_population.push_back(std::move(child2));
+                    }
+                }));
+            }
+            
+            for (auto& future : futures) {
+                future.get();
             }
 
             replace_population(new_population);
@@ -446,3 +471,48 @@ protected:
     SelectionType selection_type;
     CrossoverType crossover_type;
 };
+
+auto operator<<(std::ostream& os, const MutationType& mt) -> std::ostream& {
+    switch(mt) {
+        case MutationType::SWAP:
+            os << "SWAP";
+            break;
+        case MutationType::DISPLACEMENT:
+            os << "DISPLACEMENT";
+            break;
+        case MutationType::INVERSION:
+            os << "INVERSION";
+            break;
+    }
+    return os;
+}
+
+auto operator<<(std::ostream& os, const SelectionType& st) -> std::ostream& {
+    switch(st) {
+        case SelectionType::ROULETTE_WHEEL:
+            os << "ROULETTE_WHEEL";
+            break;
+        case SelectionType::TOURNAMENT:
+            os << "TOURNAMENT";
+            break;
+        case SelectionType::RANK:
+            os << "RANK";
+            break;
+    }
+    return os;
+}
+
+auto operator<<(std::ostream& os, const CrossoverType& ct) -> std::ostream& {
+    switch(ct) {
+        case CrossoverType::PARTIALLY_MAPPED:
+            os << "PARTIALLY_MAPPED";
+            break;
+        case CrossoverType::ORDERED:
+            os << "ORDERED";
+            break;
+        case CrossoverType::CYCLE:
+            os << "CYCLE";
+            break;
+    }
+    return os;
+}

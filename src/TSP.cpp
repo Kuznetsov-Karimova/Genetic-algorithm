@@ -108,67 +108,88 @@ void gen_alg_test(const std::string& file_name) {
     cities_from_file(cities, edge_weight_type, adjacency_matrix, path_to_file);
 
     double prob = 0.01; // Вероятность мутации
-    std::vector<uint16_t> gen_counts = {50, 100, 200, 500, 1000, 5000, 10000}; // Количество поколений
-    std::vector<uint16_t> pop_sizes = {10, 20, 50, 100, 500, 1000}; // Размер популяции
-    std::vector<MutationType> mut_types = {MutationType::SWAP, MutationType::INVERSION, MutationType::DISPLACEMENT}; 
-    std::vector<SelectionType> sel_types = {SelectionType::ROULETTE_WHEEL, SelectionType::TOURNAMENT, SelectionType::RANK};
-    std::vector<CrossoverType> cros_types = {CrossoverType::PARTIALLY_MAPPED, CrossoverType::ORDERED, CrossoverType::CYCLE};
+    // std::vector<uint16_t> gen_counts = { 100, 200, 500, 1000, 2000, 10000}; // Количество поколений
+    // std::vector<uint16_t> pop_sizes = {50, 100, 200, 500}; // Размер популяции
 
-    std::tuple<uint16_t, uint16_t, MutationType, SelectionType, CrossoverType> best_params;
+    // fisrt - gen_count, second - population_size
+    std::vector<std::pair<uint16_t, uint16_t>> params = {{100,50},
+                                                        {200, 50},
+                                                        {500,50},
+                                                        {500, 100},
+                                                        {1000, 50},
+                                                        {1000, 100},
+                                                        {1000, 200},
+                                                        {2000, 50},
+                                                        {2000, 100},
+                                                        {2000, 200},
+                                                        {5000, 50},
+                                                        {5000, 100},
+                                                        {5000, 200},
+                                                        {10000, 50},
+                                                        {10000, 100},
+                                                        {10000,200},
+                                                        };
+
+    std::tuple<uint16_t, uint16_t> best_params;
     double best_answer = 100000000;
 
-    for (uint16_t gen_count : gen_counts) {
-        for (uint16_t pop_size : pop_sizes) {
-            for (MutationType m_type : mut_types) {
-                for (SelectionType s_type : sel_types) {
-                    for (CrossoverType c_type : cros_types) {
-                        TSPPopulation tsp_population(Parameters(gen_count, pop_size, prob), 
-                        m_type, s_type, c_type);
+    // std::vector<MutationType> mut_types = {MutationType::SWAP, MutationType::DISPLACEMENT, MutationType::INVERSION};
+    // std::vector<CrossoverType> cros_types = {CrossoverType::PARTIALLY_MAPPED, CrossoverType::ORDERED, CrossoverType::CYCLE};
+    // std::vector<SelectionType> selec_types = {SelectionType::ROULETTE_WHEEL, SelectionType::TOURNAMENT, SelectionType::RANK};
+    for (const auto& param: params) {
+        // for (const auto& m_type : mut_types) {
+            // for (const auto& s_type: selec_types) {
+                // for (const auto& c_type: cros_types) {
 
-                        if (edge_weight_type == "matrix") {
-                            tsp_population.set_adjacency_mat(adjacency_matrix);
-                        }
+        std::cout << "params: " << "gen_count = " << param.first << " ; population_size = " << param.second << std::endl;
+        // std::cout << "algs: " << "mutation - " << m_type << " ; selection - " << s_type << " ; crossover - " << c_type << std::endl;
+        TSPPopulation tsp_population(Parameters(param.first, param.second, prob), 
+        MutationType::DISPLACEMENT, SelectionType::TOURNAMENT, CrossoverType::PARTIALLY_MAPPED);
 
-                        auto start = std::chrono::high_resolution_clock::now();
-                        tsp_population.initialize_first_population(cities);
-
-                        tsp_population.genetic_algorithm();
-                        auto end = std::chrono::high_resolution_clock::now();
-
-                        double answer = tsp_population.get_answer();
-                        std::cout << "Shortest path = " << answer << std::endl;
-
-                        std::chrono::duration<double> elapsed = end - start;
-                        std::cout << "TIME: " << elapsed << std::endl;
-
-                        if (answer < best_answer) {
-                            best_answer = answer;
-                            
-                            std::get<0>(best_params) = gen_count; 
-                            std::get<1>(best_params) = pop_size;
-                            std::get<2>(best_params) = m_type;
-                            std::get<3>(best_params) = s_type;
-                            std::get<4>(best_params) = c_type;
-                        }
-                    }
-                }
-            }
+        if (edge_weight_type == "matrix") {
+            tsp_population.set_adjacency_mat(adjacency_matrix);
         }
+
+        auto start = std::chrono::high_resolution_clock::now();
+        tsp_population.initialize_first_population(cities);
+
+        tsp_population.genetic_algorithm();
+        auto end = std::chrono::high_resolution_clock::now();
+
+        double answer = tsp_population.get_answer();
+        std::cout << "Shortest path = " << answer << std::endl;
+
+        std::chrono::duration<double> elapsed = end - start;
+        std::cout << "TIME: " << elapsed << std::endl;
+
+        if (answer < best_answer) {
+            best_answer = answer;
+            
+            std::get<0>(best_params) = param.first; 
+            std::get<1>(best_params) = param.second;
+        }
+
+        std::cout << std::endl;
+    // }
+    // }
+    // }
     }
+
 
     std::cout << std::endl;
     std::cout << "BEST ANSWER = " << best_answer << std::endl;
     std::cout << "PARAMS:" << std::endl;
     std::cout << "generations = " << std::get<0>(best_params) << std::endl;
     std::cout << "population size = " << std::get<1>(best_params) << std::endl;
-    std::cout << "mutation_type: " << static_cast<std::underlying_type_t<MutationType>>(std::get<2>(best_params)) << std::endl;
-    std::cout << "selection_type: " << static_cast<std::underlying_type_t<SelectionType>>(std::get<3>(best_params)) << std::endl;
-    std::cout << "crossover_type: " << static_cast<std::underlying_type_t<CrossoverType>>(std::get<4>(best_params)) << std::endl;
 }
 
-std::vector<std::string> files = {"a280.txt", //"att48.txt", "bays29.txt", "ch150.txt",
-                                    //"fl417.txt", "gr17.txt"
-                                    };
+std::vector<std::string> files = {//"a280.txt",
+                                //"att48.txt",
+                                "bays29.txt",
+                                "ch150.txt",
+                                "fl417.txt",
+                                "gr17.txt"
+                                };
 
 auto main() -> int {
 
